@@ -2,7 +2,6 @@ import { Tween } from "@tweenjs/tween.js";
 import { Container, Graphics } from "pixi.js";
 
 export class Elevator {
-  private _animation: Tween | null = null;
   public container: Container | null = null;
 
   constructor(
@@ -18,12 +17,12 @@ export class Elevator {
       this.height
     );
     this.container = container;
-    this.initTween(this.container);
+    // this.initTween(this.container);
   }
 
-  private initTween(graphics: Container) {
-    this._animation = new Tween(graphics).dynamic(true);
-  }
+  // private initTween(graphics: Container) {
+  //   this._animation = new Tween(graphics).dynamic(true);
+  // }
 
   private createContainer(
     x: number,
@@ -35,7 +34,6 @@ export class Elevator {
       color: 0xff0000,
       width: 2,
     });
-    // this._graphics.fill(0xcccccc); // Gray fill
     outlineBox.stroke();
 
     const container = new Container({
@@ -49,17 +47,5 @@ export class Elevator {
     container.x = x;
     container.y = y;
     return container;
-  }
-
-  get graphics() {
-    return this.container;
-  }
-
-  set graphics(properties: any) {
-    this.container = { ...this.graphics, ...properties };
-  }
-
-  get animation() {
-    return this._animation;
   }
 }

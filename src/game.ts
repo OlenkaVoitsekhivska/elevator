@@ -442,7 +442,6 @@ export class Game {
           exitingCount += 1;
 
           if (exitingCount === exiting.length) {
-            // this.boardTenants(level);
             this.gameStatus = "request_tenants_boarding";
             this.actionHandler(this.gameStatus);
           }

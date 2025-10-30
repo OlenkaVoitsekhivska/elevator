@@ -17,6 +17,10 @@ export class TweenManager {
     this.elevatorAnimationGroup.add(tween);
   }
 
+  removeTweenFromMeinLoop(tween: Tween) {
+    this.elevatorAnimationGroup.remove(tween);
+  }
+
   addTweenToApproachingWaitingZoneTenantsGroup(tween: Tween) {
     this.tenantsApproachingWaitingZoneGroup.add(tween);
   }

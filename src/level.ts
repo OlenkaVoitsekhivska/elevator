@@ -22,7 +22,6 @@ export class Level {
         color: 0xff0000,
         width: 2,
       });
-    // this._graphics.fill(0xcccccc); // Gray fill
     this.graphics.stroke();
     this.graphics.x = 0;
     this.graphics.y = this.y;
