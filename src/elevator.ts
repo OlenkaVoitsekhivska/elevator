@@ -1,4 +1,3 @@
-import { Tween } from "@tweenjs/tween.js";
 import { Container, Graphics } from "pixi.js";
 
 export class Elevator {
@@ -17,12 +16,7 @@ export class Elevator {
       this.height
     );
     this.container = container;
-    // this.initTween(this.container);
   }
-
-  // private initTween(graphics: Container) {
-  //   this._animation = new Tween(graphics).dynamic(true);
-  // }
 
   private createContainer(
     x: number,

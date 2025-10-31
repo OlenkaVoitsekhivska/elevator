@@ -24,7 +24,7 @@ export class Game {
     {
       tenants: Tenant[];
       waitingTenants: Tenant[];
-      waitingZoneTenants: Tenant[];
+      waitingZoneTenants: Map<number, Tenant | null>;
     }
   >();
 
@@ -44,7 +44,12 @@ export class Game {
 
   private TENANT_SIZE = 100;
   private ELEVATOR_WIDTH = 0;
-  private ELEVATOR_PAUSE_DURATION = 800;
+
+  private ANIMATION_DURATION = {
+    ELEVATOR: 1000,
+    PAUSE: 800,
+    TENANT_BOARDING: 300,
+  };
 
   private gameStatus:
     | "request_tenants_unboarding"
@@ -53,6 +58,8 @@ export class Game {
     | "request_pause"
     | "request_elevator_move"
     | null = null;
+
+  private intervalsRef: number[] = [];
 
   constructor(config: AnimationConfig) {
     this.levelsNumber = config.levels_number;
@@ -73,13 +80,6 @@ export class Game {
     Array.from({ length: capacity }, (_, index) => {
       mapRef.set(index, null);
     });
-  }
-
-  private allTenantsTransferred(): boolean {
-    const allTransferred = Array.from(this.tenantsMap).every(
-      ([_, { waitingTenants }]) => waitingTenants.length === 0
-    );
-    return allTransferred;
   }
 
   private updateWaitingTenantsOnLevel(
@@ -140,8 +140,35 @@ export class Game {
 
     this.initElevator();
     this.initLevels();
+    this.spawnTenantsByLevel();
+  }
+
+  spawnTenantsByLevel() {
     this.levels?.forEach((level) => {
-      this.moveTenantsToWaitingZone(level.id as number);
+      const levelId = level.id as number;
+      let tenantCount = 0;
+      const SMALL_INTERVAL = 4000;
+      const LARGE_INTERVAL = 10000;
+
+      const spawnInterval = this.getRandomInteger(
+        SMALL_INTERVAL,
+        LARGE_INTERVAL
+      );
+
+      const intervalId = setInterval(() => {
+        const vacantSpots = this.vacantSpotsInWaitingZone(levelId);
+
+        if (!vacantSpots.length) {
+          return;
+        }
+
+        const tenant = this.spawnTenants(levelId, tenantCount);
+        tenantCount += 1;
+        this.updateTenantMapAfterSpawn(levelId, tenant);
+        this.moveTenantsToWaitingZone(levelId, tenant);
+      }, spawnInterval);
+
+      this.intervalsRef.push(intervalId);
     });
   }
 
@@ -174,36 +201,15 @@ export class Game {
         this.app?.stage.addChild(level.graphics);
       }
 
-      const tenantsNumber = this.getRandomInteger(1, 4);
-      const tenants = Array.from(
-        { length: tenantsNumber },
-        (_, tenantIndex) => {
-          const tenantLevelDestination =
-            this.createLevelDestination(levelIndex);
-          const tenantId = `level-${levelIndex}__tenant-${tenantIndex}`;
-
-          const tenantX =
-            this.app?.screen.width ||
-            DEFAULT_LEVEL_WIDTH + this.TENANT_SIZE * tenantIndex;
-          const tenant = new Tenant(
-            tenantLevelDestination,
-            levelIndex,
-            tenantId,
-            tenantX,
-            levelY + this.TENANT_SIZE,
-            this.TENANT_SIZE
-          );
-          if (tenant.graphics) {
-            this.app?.stage.addChild(tenant.graphics);
-          }
-          return tenant;
-        }
-      );
-
       this.tenantsMap.set(levelIndex, {
-        tenants,
-        waitingTenants: tenants,
-        waitingZoneTenants: [],
+        tenants: [],
+        waitingTenants: [],
+        waitingZoneTenants: new Map(
+          Array.from(
+            { length: this.ELEVATOR_STATE.capacity },
+            (item, index) => [index, null]
+          )
+        ),
       });
       return level;
     });
@@ -225,15 +231,13 @@ export class Game {
   }
 
   elevatorLoop() {
-    if (this.allTenantsTransferred() && this.elevatorVacant()) {
-      return this.ticker.stop();
-    }
+    const waitingZoneTenants = this.waitingZoneByLevel(this.currentLevel);
 
-    const waitingZoneTenants = this.findLevelData(
-      this.currentLevel
-    )?.waitingZoneTenants;
+    const hasWaitingTenants = waitingZoneTenants.some(
+      ([index, tenant]) => tenant !== null
+    );
 
-    if (waitingZoneTenants?.length) {
+    if (hasWaitingTenants) {
       this.gameStatus = "request_pause";
       this.actionHandler(this.gameStatus);
     } else {
@@ -247,9 +251,6 @@ export class Game {
       case null:
       case "request_elevator_move":
         {
-          if (this.allTenantsTransferred() && this.elevatorVacant()) {
-            return this.ticker.stop();
-          }
           this.ELEVATOR_STATE.status = "moving";
           this.moveElevator();
         }
@@ -257,7 +258,7 @@ export class Game {
 
       case "request_pause": {
         const pauseAnimation = new TWEEN.Tween({}).duration(
-          this.ELEVATOR_PAUSE_DURATION
+          this.ANIMATION_DURATION.PAUSE
         );
         this.tweenManager.addTweenToMainLoopGroup(pauseAnimation);
         this.ELEVATOR_STATE.status = "idle";
@@ -290,7 +291,7 @@ export class Game {
     const elevatorAnimation = new Tween(
       this.elevatorRef?.container as PIXI.Container
     )
-      .to({ y: nextLevelY }, 1000)
+      .to({ y: nextLevelY }, this.ANIMATION_DURATION.ELEVATOR)
       .onStart(() => {
         this.animateElevatorChildren(nextLevelY);
       })
@@ -304,47 +305,35 @@ export class Game {
     elevatorAnimation.start();
   }
 
-  private moveTenantsToWaitingZone(level: number) {
-    const waitingTenants = this.findLevelData(level)?.waitingTenants;
-    if (!waitingTenants?.length) {
+  private moveTenantsToWaitingZone(level: number, tenant: Tenant) {
+    const vacantSpots = this.vacantSpotsInWaitingZone(level);
+
+    if (!vacantSpots.length) {
       return;
     }
-    let tenantsByElevator = 0;
-    for (let i = 0; i < waitingTenants.length; i++) {
-      const tenant = waitingTenants[i];
-      const x = this.ELEVATOR_WIDTH + tenantsByElevator * this.TENANT_SIZE;
-      const delay = this.getRandomInteger(4000, 10000);
-      tenantsByElevator += 1;
-      const animation = new Tween(tenant.graphics as PIXI.Graphics)
-        .to({ x })
-        .delay(i === 0 ? undefined : delay)
-        .onComplete(() => {
-          this.addToWaitingZoneByLevel(level, tenant);
-        });
+    const spot = this.vacantSpotsInWaitingZone(level);
+    const x = this.ELEVATOR_WIDTH + spot[0][0] * this.TENANT_SIZE;
+    const animation = new Tween(tenant.graphics as PIXI.Graphics)
+      .to({ x })
+      .onComplete(() => {
+        this.addToWaitingZoneByLevel(level, tenant);
+      });
 
-      this.tweenManager.addTweenToApproachingWaitingZoneTenantsGroup(animation);
-      animation.start();
-    }
+    this.tweenManager.addTweenToApproachingWaitingZoneTenantsGroup(animation);
+    animation.start();
   }
 
   private boardTenants(level: number) {
-    const levelData = this.findLevelData(level);
-
-    const waitingZone = [...(levelData?.waitingZoneTenants || [])];
-
-    const boardingTenants = waitingZone.filter((tenant) =>
-      tenant.canBoard(this.direction)
+    const boardingTenants = this.waitingZoneByLevel(level).filter(
+      ([waitingSpot, tenant]) => tenant && tenant?.canBoard(this.direction)
     );
-
-    const vacantSpots = Array.from(this.ELEVATOR_STATE.tenants).filter(
-      ([indexed, tenant]) => !tenant
-    );
+    const vacantSpots = this.vacantSpotsInWaitingZone(level);
     const canBoardNumber = Math.min(vacantSpots.length, boardingTenants.length);
     let boardedCount = 0;
 
     if (!canBoardNumber) {
       this.gameStatus = "request_elevator_move";
-      this.actionHandler(this.gameStatus);
+      return this.actionHandler(this.gameStatus);
     }
     for (let i = 0; i < boardingTenants.length; i++) {
       const elevatorState = {
@@ -359,7 +348,7 @@ export class Game {
         return;
       }
 
-      const tenant = boardingTenants[i];
+      const [waitingSpot, tenant] = boardingTenants[i] as [number, Tenant];
       const vacantSpot = this.findSpotInElevator();
 
       if (vacantSpot !== null) {
@@ -374,7 +363,7 @@ export class Game {
         const targetX = this.TENANT_SIZE * vacantSpot;
 
         const animation = new Tween(tenant.graphics as PIXI.Graphics)
-          .to({ x: targetX })
+          .to({ x: targetX }, this.ANIMATION_DURATION.TENANT_BOARDING)
           .onComplete(() => {
             this.removeFromWaitingZoneByLevel(level, tenant);
             this.updateWaitingTenantsOnLevel(level, tenant);
@@ -394,11 +383,6 @@ export class Game {
   private elevatorHasVacantSpots(): boolean {
     const spots = this.ELEVATOR_STATE.tenants;
     return Array.from(spots).some(([_index, tenant]) => !tenant);
-  }
-
-  private elevatorVacant(): boolean {
-    const spots = this.ELEVATOR_STATE.tenants;
-    return Array.from(spots).every(([_index, tenant]) => !tenant);
   }
 
   private findSpotInElevator(): number | null {
@@ -426,13 +410,16 @@ export class Game {
 
     exiting.forEach(([spot, tenant]) => {
       const animation = new Tween(tenant?.graphics as PIXI.Graphics)
-        .to({
-          x: this.app?.screen.width,
-          y: tenantY,
-        })
+        .to(
+          {
+            x: this.app?.screen.width,
+            y: tenantY,
+          },
+          this.ANIMATION_DURATION.TENANT_BOARDING
+        )
         .onComplete(() => {
           const updatedTenants = new Map(this.ELEVATOR_STATE.tenants);
-          updatedTenants.set(spot, null); // Free up the spot
+          updatedTenants.set(spot, null);
           this.removeFromWaitingTenantsByLevel(level, tenant as Tenant);
           this.ELEVATOR_STATE = {
             ...this.ELEVATOR_STATE,
@@ -460,24 +447,25 @@ export class Game {
     if (!levelData) {
       return;
     }
-    this.tenantsMap.set(level, {
-      ...levelData,
-      waitingZoneTenants: [...levelData.waitingZoneTenants, tenant],
-    });
+    const vacantSpot = Array.from(levelData.waitingZoneTenants).find(
+      ([index, tenant]) => !tenant
+    )?.[0];
+    if (vacantSpot === undefined) {
+      return;
+    }
+    levelData.waitingZoneTenants.set(vacantSpot, tenant);
   }
 
   private removeFromWaitingZoneByLevel(level: number, tenant: Tenant): void {
-    const levelData = this.findLevelData(level);
-    if (!levelData) {
+    const waitingZone = this.waitingZoneByLevel(level);
+    const tenantIndex = waitingZone.find(
+      ([spotId, waitingTenant]) => tenant.id === waitingTenant?.id
+    )?.[0];
+    if (tenantIndex === undefined) {
       return;
     }
-
-    this.tenantsMap.set(level, {
-      ...levelData,
-      waitingZoneTenants: levelData.waitingZoneTenants.filter(
-        (waitingTenant) => waitingTenant.id !== tenant.id
-      ),
-    });
+    const levelData = this.findLevelData(level)!;
+    levelData.waitingZoneTenants.set(tenantIndex, null);
   }
 
   private removeFromWaitingTenantsByLevel(level: number, tenant: Tenant): void {
@@ -511,11 +499,63 @@ export class Game {
         {
           y: targetY,
         },
-        1000
+        this.ANIMATION_DURATION.ELEVATOR
       );
 
       this.tweenManager.addTweenToMainLoopGroup(animation);
       animation.start();
     }
+  }
+
+  private spawnTenants(level: number, tenantIndex: number) {
+    const screenWidth = this.app?.screen.width as number;
+
+    const tenantLevelDestination = this.createLevelDestination(level);
+    const tenantId = `level-${level}__tenant-${tenantIndex}`;
+    const levelY = this.appartmentHeight - (level + 1) * this.levelHeight;
+    const tenantX = screenWidth + this.TENANT_SIZE * tenantIndex; //initially hide (right margin)
+    const tenant = new Tenant(
+      tenantLevelDestination,
+      level,
+      tenantId,
+      tenantX,
+      levelY + this.TENANT_SIZE,
+      this.TENANT_SIZE
+    );
+    if (tenant.graphics) {
+      this.app?.stage.addChild(tenant.graphics);
+    }
+
+    return tenant;
+  }
+
+  private updateTenantMapAfterSpawn(level: number, tenant: Tenant): void {
+    const levelData = this.findLevelData(level);
+    if (!levelData) {
+      return;
+    }
+
+    const preexistingTenants = levelData?.tenants || [];
+    const preexistingWaitingTenants = levelData?.waitingTenants || [];
+
+    levelData.tenants = [...preexistingTenants, tenant];
+    levelData.waitingTenants = [...preexistingWaitingTenants, tenant];
+  }
+
+  private waitingZoneByLevel(level: number): [number, Tenant | null][] {
+    const levelData = this.findLevelData(level);
+    if (!levelData) {
+      return [];
+    }
+    return Array.from(levelData.waitingZoneTenants);
+  }
+  private vacantSpotsInWaitingZone(level: number): [number, Tenant | null][] {
+    const levelData = this.findLevelData(level);
+    if (!levelData) {
+      return [];
+    }
+    return this.waitingZoneByLevel(level).filter(
+      ([index, tenant]) => tenant === null
+    );
   }
 }
